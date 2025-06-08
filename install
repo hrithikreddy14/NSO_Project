@@ -26,3 +26,31 @@ virtualip="${tag}_vip"
 sshconf_file="config"
 knownhosts="known_hosts"
 hostsfile="hosts"
+
+if test -f "$sshconf_file"; then
+    rm "$sshconf_file"
+fi
+
+if test -f "$knownhosts"; then
+    rm "$knownhosts"
+fi
+
+if test -f "$hostsfile"; then
+    rm "$hostsfile"
+fi
+
+checking_keypair=$(openstack keypair list -f value --column Name)
+if ! grep -qFx "$def_keypair" <<< "$checking_keypair"; then
+    keypair_create=$(openstack keypair create --public-key "$ssh_key" "$def_keypair")
+    echo "$(date) keypair created $def_keypair"
+else
+    echo "$(date) $def_keypair already exists"
+fi
+
+checking_networks=$(openstack network list -f value --column Name)
+if ! grep -qFx "$def_network" <<< "$checking_networks"; then
+    network_create=$(openstack network create --tag "$tag" "$def_network" -f json)
+    echo "$(date) network created $def_network"
+else
+    echo "$(date) $def_network already exists"
+fi
