@@ -54,3 +54,22 @@ if ! grep -qFx "$def_network" <<< "$checking_networks"; then
 else
     echo "$(date) $def_network already exists"
 fi
+
+checking_subnets=$(openstack subnet list -f value --column Name)
+if ! grep -qFx "$def_subnet" <<< "$checking_subnets"; then
+    subnet_create=$(openstack subnet create --tag "$tag" --network "$def_network" --subnet-range 10.50.0.0/24 --gateway 10.50.0.1 --allocation-pool start=10.50.0.2,end=10.50.0.100 "$def_subnet" -f json)
+    echo "$(date) subnet created $def_subnet"
+else
+    echo "$(date) $def_subnet already exists"
+fi
+
+checking_routers=$(openstack router list -f value --column Name)
+if ! grep -qFx "$def_router" <<< "$checking_routers"; then
+    router_create=$(openstack router create --tag "$tag" "$def_router")
+    echo "$(date) router created $def_router"
+    # adding subnet and external gateway to the router
+    gatewaysetting=$(openstack router set --external-gateway ext-net "$def_router")
+    subnetadding=$(openstack router add subnet "$def_router" "$def_subnet")
+else
+    echo "$(date) $def_router already exists"
+fi
