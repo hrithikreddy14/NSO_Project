@@ -73,3 +73,9 @@ if ! grep -qFx "$def_router" <<< "$checking_routers"; then
 else
     echo "$(date) $def_router already exists"
 fi
+
+gatewaysetting=$(openstack router set --external-gateway ext-net "$def_router")
+    subnetadding=$(openstack router add subnet "$def_router" "$def_subnet")
+else
+    echo "$(date) $def_router already exists"
+fi
