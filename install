@@ -86,3 +86,7 @@ if echo "$checking_secgrps" | grep -qFx "$def_security_grp"; then
     echo "$(date) $def_security_grp already exists"
 else
     secgrp_create=$(openstack security group create --tag "$tag" "$def_security_grp" -f json)
+    sec_rule1=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 22 --protocol tcp --ingress "$def_security_grp")
+    sec_rule2=$(openstack security group rule create --remote-ip 0.0.0.0/0 --protocol icmp --ingress "$def_security_grp")
+    sec_rule3=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 5000 --protocol tcp --ingress "$def_security_grp")
+    sec_rule4=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 8080 --protocol tcp --ingress "$def_security_grp")
