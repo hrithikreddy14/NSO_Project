@@ -79,3 +79,10 @@ gatewaysetting=$(openstack router set --external-gateway ext-net "$def_router")
 else
     echo "$(date) $def_router already exists"
 fi
+
+checking_secgrps=$(openstack security group list -f value --column Name)
+
+if echo "$checking_secgrps" | grep -qFx "$def_security_grp"; then
+    echo "$(date) $def_security_grp already exists"
+else
+    secgrp_create=$(openstack security group create --tag "$tag" "$def_security_grp" -f json)
