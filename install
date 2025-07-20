@@ -99,3 +99,8 @@ else
 
     echo "$(date) security group created $def_security_grp"
 fi
+
+echo "$(date) creating virtual port"
+viripprt=$(openstack port create --network "$def_network" --fixed-ip subnet="$def_subnet" --no-security-group "$virtualip")
+
+ipadd_notassign=$(openstack floating ip list --status DOWN -f value -c "Floating IP Address")
