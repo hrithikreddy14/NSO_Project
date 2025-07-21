@@ -1,0 +1,13 @@
+#!/bin/bash
+
+display_current_date_time() {
+    echo "$(date)"
+}
+
+openrcfile=$1
+tag=$2
+ssh_key=$3
+
+display_current_date_time
+echo "Starting operations mode for $tag using $openrcfile for credentials."
+source "$openrcfile"
