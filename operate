@@ -11,3 +11,17 @@ ssh_key=$3
 display_current_date_time
 echo "Starting operations mode for $tag using $openrcfile for credentials."
 source "$openrcfile"
+
+def_network="${tag}_network"
+def_subnet="${tag}_subnet"
+def_keypair="${tag}_key"
+def_router="${tag}_router"
+def_security_grp="${tag}_security_group"
+haproxyserv="${tag}_HAproxy"
+haproxyserv2="${tag}_HAproxy2"
+bastionserv="${tag}_bastion"
+devlop_serv="${tag}_dev"
+virtualip="${tag}_vip"
+sshconf_file="config"
+knownhosts="known_hosts"
+hostsfile="hosts"
