@@ -25,3 +25,18 @@ virtualip="${tag}_vip"
 sshconf_file="config"
 knownhosts="known_hosts"
 hostsfile="hosts"
+
+# Function to read required servers from servers.conf (just like reference repo)
+read_required_servers() {
+    if [[ -f "servers.conf" ]]; then
+        no_of_serv=$(cat servers.conf)
+    else
+        no_of_serv=3
+    fi
+}
+
+# Function to count current dev servers (using your exact pattern)
+count_current_servers() {
+    serv_contained=$(openstack server list --status ACTIVE --column Name -f value)
+    number_devlopserv=$(grep -ocP "${devlop_serv}" <<<"$serv_contained")
+}
