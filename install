@@ -123,3 +123,10 @@ if ! echo "$serv_contained" | grep -q "$bastionserv"; then
         floating_ip1create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd1)
         floating_ip1=$(cat floatipadd1)
     fi
+
+    create_bastion=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$bastionserv" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
+    fipadd_bastion=$(openstack server add floating ip "$bastionserv" "$floating_ip1")
+    echo "$(date) Created $bastionserv server"
+else
+    echo "$(date) $bastionserv already exists"
+fi
