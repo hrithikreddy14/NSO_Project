@@ -104,3 +104,22 @@ echo "$(date) creating virtual port"
 viripprt=$(openstack port create --network "$def_network" --fixed-ip subnet="$def_subnet" --no-security-group "$virtualip")
 
 ipadd_notassign=$(openstack floating ip list --status DOWN -f value -c "Floating IP Address")
+
+# servers deployment bastion
+serv_contained=$(openstack server list --status ACTIVE --column Name -f value)
+
+if ! echo "$serv_contained" | grep -q "$bastionserv"; then
+    if [[ -n "$ipadd_notassign" ]]; then
+        floating_ip1=$(echo "$ipadd_notassign" | awk '{print $1}')
+        if [[ -n "$floating_ip1" ]]; then
+            echo "$(date) floating IP is given for bastion server"
+        else
+            echo "$(date) Creating floating IP for bastion"
+            floating_ip1create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd1)
+            floating_ip1=$(cat floatipadd1)
+        fi
+    else
+        echo "$(date) Creating floating IP for bastion"
+        floating_ip1create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd1)
+        floating_ip1=$(cat floatipadd1)
+    fi
