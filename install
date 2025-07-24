@@ -74,12 +74,6 @@ else
     echo "$(date) $def_router already exists"
 fi
 
-gatewaysetting=$(openstack router set --external-gateway ext-net "$def_router")
-    subnetadding=$(openstack router add subnet "$def_router" "$def_subnet")
-else
-    echo "$(date) $def_router already exists"
-fi
-
 checking_secgrps=$(openstack security group list -f value --column Name)
 
 if echo "$checking_secgrps" | grep -qFx "$def_security_grp"; then
