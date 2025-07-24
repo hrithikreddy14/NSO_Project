@@ -174,3 +174,25 @@ elif ((no_of_serv > number_devlopserv)); then
     devlopserv_plus=$((no_of_serv - number_devlopserv))
     j=$((number_devlopserv + 1))
 
+    for ((i = 0; i < devlopserv_plus; i++)); do
+        namedevlopserver="${devlop_serv}${j}"
+        dser_create=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$namedevlopserver" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
+        echo "$(date) Created $namedevlopserver server"
+
+        active=false
+        until $active; do
+            server_status=$(openstack server show "$namedevlopserver" -f value -c status)
+            if [[ "$server_status" == "ACTIVE" ]]; then
+                active=true
+            fi
+        done
+
+        ((j++))
+    done
+else
+    echo "Required number of dev servers ($no_of_serv) already exists."
+fi
+
+floataddr_bastion=$(openstack server list --name "$bastionserv" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==2')
+floataddr_proxy1=$(openstack server show "$haproxyserv" -c addresses | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
+floataddr_proxy2=$(openstack server list --name "$haproxyserv2" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
