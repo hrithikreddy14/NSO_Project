@@ -130,3 +130,21 @@ if ! echo "$serv_contained" | grep -q "$bastionserv"; then
 else
     echo "$(date) $bastionserv already exists"
 fi
+
+# servers deployment haproxies
+if ! echo "$serv_contained" | grep -q "$haproxyserv"; then
+    if [[ -n "$ipadd_notassign" ]]; then
+        floating_ip2=$(echo "$ipadd_notassign" | awk '{print $2}')
+        if [[ -n "$floating_ip2" ]]; then
+            echo "$(date) floating IP is given for Haproxy server"
+        else
+            echo "$(date) Creating floating IP for Haproxy"
+            floating_ip2create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd2)
+            floating_ip2=$(cat floatipadd2)
+        fi
+    else
+        echo "$(date) Creating floating IP for Haproxy"
+        floating_ip2create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd2)
+        floating_ip2=$(cat floatipadd2)
+    fi
+
