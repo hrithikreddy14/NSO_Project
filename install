@@ -148,3 +148,17 @@ if ! echo "$serv_contained" | grep -q "$haproxyserv"; then
         floating_ip2=$(cat floatipadd2)
     fi
 
+    create_haproxy=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$haproxyserv" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
+    create_haproxy2=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$haproxyserv2" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
+    echo "$(date) Two haproxy $haproxyserv and $haproxyserv2 servers are created"
+else
+    echo "$(date) Two haproxy $haproxyserv and $haproxyserv2 servers already exist"
+fi
+
+vip_fipadding=$(openstack floating ip set --port "$virtualip" "$floating_ip2")
+addrof_virip=$(openstack port show "$virtualip" -f value -c fixed_ips | grep -Po '\d+\.\d+\.\d+\.\d+')
+echo "$addrof_virip" >>addr_vip
+
+prtupdte=$(openstack port set --allowed-address ip-address="$floating_ip2" "$virtualip")
+
+number_devlopserv=$(grep -ocP "${devlop_serv}" <<<"$serv_contained")
