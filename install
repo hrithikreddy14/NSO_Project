@@ -162,3 +162,15 @@ echo "$addrof_virip" >>addr_vip
 prtupdte=$(openstack port set --allowed-address ip-address="$floating_ip2" "$virtualip")
 
 number_devlopserv=$(grep -ocP "${devlop_serv}" <<<"$serv_contained")
+
+if ((no_of_serv < number_devlopserv)); then
+    devlopserv_takeout=$((number_devlopserv - no_of_serv))
+    for ((i = 0; i < devlopserv_takeout; i++)); do
+        devserv_remove=$(openstack server list --status ACTIVE -f value -c Name | grep -m1 -oP "${tag}_dev([1-9]+)")
+        removed_serv=$(openstack server delete "$devserv_remove" --wait)
+        echo "$(date) Deleted $devserv_remove"
+    done
+elif ((no_of_serv > number_devlopserv)); then
+    devlopserv_plus=$((no_of_serv - number_devlopserv))
+    j=$((number_devlopserv + 1))
+
