@@ -81,7 +81,7 @@ if echo "$checking_secgrps" | grep -qFx "$def_security_grp"; then
 else
     secgrp_create=$(openstack security group create --tag "$tag" "$def_security_grp" -f json)
     sec_rule1=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 22 --protocol tcp --ingress "$def_security_grp")
-    sec_rule2=$(openstack security group rule create --remote-ip 0.0.0.0/0 --protocol icmp --ingress "$def_security_grp")
+    sec_rule2=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 80 --protocol icmp --ingress "$def_security_grp")
     sec_rule3=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 5000 --protocol tcp --ingress "$def_security_grp")
     sec_rule4=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 8080 --protocol tcp --ingress "$def_security_grp")
     sec_rule5=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 6000 --protocol udp --ingress "$def_security_grp")
@@ -190,3 +190,87 @@ fi
 floataddr_bastion=$(openstack server list --name "$bastionserv" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==2')
 floataddr_proxy1=$(openstack server show "$haproxyserv" -c addresses | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
 floataddr_proxy2=$(openstack server list --name "$haproxyserv2" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
+
+# update ports of haproxy servers
+proxy1_prt=$(openstack port list --fixed-ip ip-address="$floataddr_proxy1" -c ID -f value)
+proxy2_prt=$(openstack port list --fixed-ip ip-address="$floataddr_proxy2" -c ID -f value)
+
+prt1_u=$(openstack port set --allowed-address ip-address="$addrof_virip" "$proxy1_prt")
+prt2_u=$(openstack port set --allowed-address ip-address="$addrof_virip" "$proxy2_prt")
+
+# config files and hosts files
+echo "$(date) Generating config file"
+echo "Host $bastionserv" >>"$sshconf_file"
+echo "   User ubuntu" >>"$sshconf_file"
+echo "   HostName $floataddr_bastion" >>"$sshconf_file"
+echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
+echo "   UserKnownHostsFile /dev/null" >>"$sshconf_file"
+echo "   StrictHostKeyChecking no" >>"$sshconf_file"
+echo "   PasswordAuthentication no" >>"$sshconf_file"
+
+echo " " >>"$sshconf_file"
+echo "Host $haproxyserv" >>"$sshconf_file"
+echo "   User ubuntu" >>"$sshconf_file"
+echo "   HostName $floataddr_proxy1" >>"$sshconf_file"
+echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
+echo "   StrictHostKeyChecking no" >>"$sshconf_file"
+echo "   PasswordAuthentication no" >>"$sshconf_file"
+echo "   ProxyJump $bastionserv" >>"$sshconf_file"
+
+echo " " >>"$sshconf_file"
+echo "Host $haproxyserv2" >>"$sshconf_file"
+echo "   User ubuntu" >>"$sshconf_file"
+echo "   HostName $floataddr_proxy2" >>"$sshconf_file"
+echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
+echo "   StrictHostKeyChecking no" >>"$sshconf_file"
+echo "   PasswordAuthentication no" >>"$sshconf_file"
+echo "   ProxyJump $bastionserv" >>"$sshconf_file"
+
+echo "[bastion]" >>"$hostsfile"
+echo "$bastionserv" >>"$hostsfile"
+echo " " >>"$hostsfile"
+echo "[HAproxy]" >>"$hostsfile"
+echo "$haproxyserv" >>"$hostsfile"
+echo "$haproxyserv2" >>"$hostsfile"
+
+echo " " >>"$hostsfile"
+echo "[webservers]" >>"$hostsfile"
+
+awakeserv=$(openstack server list --status ACTIVE -f value -c Name | grep -oP "${tag}_dev([1-9]+)")
+echo "$(date) total number of dev servers existing $awakeserv"
+
+# servers looping
+echo "$awakeserv" | while IFS= read -r serv; do
+    ipadd=$(openstack server list --name "$serv" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+')
+    echo " " >>"$sshconf_file"
+    echo "Host $serv" >>"$sshconf_file"
+    echo "   User ubuntu" >>"$sshconf_file"
+    echo "   HostName $ipadd" >>"$sshconf_file"
+    echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
+    echo "   UserKnownHostsFile=/dev/null" >>"$sshconf_file"
+    echo "   StrictHostKeyChecking no" >>"$sshconf_file"
+    echo "   PasswordAuthentication no" >>"$sshconf_file"
+    echo "   ProxyJump $bastionserv" >>"$sshconf_file"
+
+    echo "$serv" >>"$hostsfile"
+done
+
+echo " " >>"$hostsfile"
+echo "[primary_proxy]" >>"$hostsfile"
+echo "$haproxyserv" >>"$hostsfile"
+echo " " >>"$hostsfile"
+echo "[backup_proxy]" >>"$hostsfile"
+echo "$haproxyserv2" >>"$hostsfile"
+
+echo " " >>"$hostsfile"
+echo "[all:vars]" >>"$hostsfile"
+echo "ansible_user=ubuntu" >>"$hostsfile"
+echo "ansible_ssh_private_key_file=~/.ssh/id_rsa" >>"$hostsfile"
+echo "ansible_ssh_common_args='-F $sshconf_file'" >>"$hostsfile"
+
+echo "$(date) Running ansible playbook"
+ansible-playbook -i "$hostsfile" site.yaml
+
+echo "Bastion IP address: "$floating_ip1""
+
+echo "HAproxy IP address: "$floating_ip2""
