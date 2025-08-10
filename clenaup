@@ -1,0 +1,213 @@
+#!/bin/bash
+
+display_current_date_time() {
+    echo "$(date)"
+}
+
+openrcfile=$1
+tag=$2
+ssh_key=$3
+required_dev_servers=$(cat servers.conf)
+
+def_network="${tag}_network"
+def_subnet="${tag}_subnet"
+def_keypair="${tag}_key"
+def_router="${tag}_router"
+def_security_grp="${tag}_security_group"
+haproxyserv="${tag}_HAproxy"
+haproxyserv2="${tag}_HAproxy2"
+bastionserv="${tag}_bastion"
+devlop_serv="${tag}_dev"
+virtualip="${tag}_vip"
+sshconf_file="config"
+knownhosts="known_hosts"
+hostsfile="hosts"
+floating_ip2=$(cat floatipadd2)
+
+
+# Function to delete servers
+clean_up_servers() {
+  devserv=($(openstack server list --name "$tag" -c ID -f value))
+  n=${#devserv[@]}
+
+  # Loop through each server and delete it
+  if [[ -n "$devserv" ]]; then
+    echo "$(date) $n servers are available so deleting servers"
+
+    # Initialize a counter variable
+    i=0
+
+    # Loop through each server and delete it
+    while [ $i -lt $n ]; do
+      no_serv="${devserv[$i]}"
+      openstack server delete "$no_serv"
+      ((i++))
+    done
+
+    echo "$(date) servers deleted"
+  else
+    echo "$(date) there are no servers available to delete"
+  fi
+}
+
+# Function to delete keypairs
+clean_up_keypairs() {
+  key=($(openstack keypair list -f value -c Name | grep "$tag.*"))
+
+  if [[ -n "$key" ]]; then
+    i=0
+
+    # Loop through each keypair and delete it
+    while [ $i -lt ${#key[@]} ]; do
+      pair="${key[$i]}"
+      openstack keypair delete "$pair"
+      ((i++))
+    done
+
+    echo "$(date) keypair deleted $def_keypair"
+  else
+    echo "$(date) there are no $def_keypair available to delete"
+  fi
+}
+
+# Function to delete floating IPs
+clean_up_floatips() {
+  floatadd=($(openstack floating ip list --status DOWN -f value -c "Floating IP Address"))
+
+  if [[ -n "$floatadd" ]]; then
+    i=0
+
+    # Loop through each floating IP and delete it
+    while [ $i -lt ${#floatadd[@]} ]; do
+      add_float="${floatadd[$i]}"
+      openstack floating ip delete "$add_float"
+      ((i++))
+    done
+
+    echo "$(date) floating IPs deleted"
+  else
+    echo "$(date) there are no floating IPs available to delete"
+  fi
+}
+
+# Function to delete virtual port
+clean_up_viprt() {
+  vip=$(openstack floating ip unset --port "$floating_ip2")
+  echo "$(date) disconnecting floating ip from virtual port"
+
+  vfip=$(openstack port show "$virtualip" -f value -c fixed_ips | grep -Po '\d+\.\d+\.\d+\.\d+')
+  echo "$vfip" >> vadd
+
+  # Unassign floating IPs
+  floatips_notassign=($(openstack floating ip list --port "$virtualip" --status ACTIVE -f value -c "Floating IP Address"))
+
+  for ipadd in "${floatips_notassign[@]}"; do
+    openstack floating ip unset --port "$ipadd"
+    echo "$(date) floating IP unset $ipadd from port"
+  done
+
+  # Delete virtual port
+  openstack port delete "$virtualip"
+  echo "$(date) virtual port deleted"
+}
+
+# Function to delete subnets
+clean_up_subnets() {
+  snets=($(openstack subnet list --tag "$tag" -c ID -f value))
+
+  if [[ -n "$snets" ]]; then
+    i=0
+
+    # Loop through each subnet and remove it
+    while [ $i -lt ${#snets[@]} ]; do
+      subnet="${snets[$i]}"
+      openstack router remove subnet "$def_router" "$subnet"
+      openstack subnet delete "$subnet"
+      ((i++))
+    done
+
+    echo "$(date) subnet deleted $def_subnet"
+  else
+    echo "$(date) there is no subnets available $def_subnet to delete"
+  fi
+}
+
+# Function to delete routers
+clean_up_routers() {
+  list_routers=($(openstack router list --tag "$tag" -f value -c Name))
+
+  if [[ -n "$list_routers" ]]; then
+    i=0
+
+    # Loop through each router and delete it
+    while [ $i -lt ${#list_routers[@]} ]; do
+      router="${list_routers[$i]}"
+      openstack router delete "$router"
+      ((i++))
+    done
+
+    echo "$(date) router deleted $router_name"
+  else
+    echo "$(date) there are no router available $router_name to delete"
+  fi
+}
+
+# Function to delete networks
+clean_up_networks() {
+  list_network=($(openstack network list --tag "$tag" -f value -c Name))
+
+  if [[ -n "$list_network" ]]; then
+    i=0
+
+    # Loop through each network and delete it
+    while [ $i -lt ${#list_network[@]} ]; do
+      networks="${list_network[$i]}"
+      openstack network delete "$networks"
+      ((i++))
+    done
+
+    echo "$(date) network deleted $def_network"
+  else
+    echo "$(date) there are no network available $def_network to remove"
+  fi
+}
+
+# Function to delete security groups
+clean_up_securitygrps() {
+  list_sectygrp=($(openstack security group list --tag "$tag" -f value -c Name))
+
+  if [[ -n "$list_sectygrp" ]]; then
+    i=0
+
+    # Loop through each security group and delete it
+    while [ $i -lt ${#list_sectygrp[@]} ]; do
+      security="${list_sectygrp[$i]}"
+      openstack security group delete "$security"
+      ((i++))
+    done
+
+    echo "$(date) security group deleted $def_security_grp"
+  else
+    echo "$(date) there are no security groups available $def_security_grp to remove"
+  fi
+}
+
+
+# Use the 'current_date_time' and 'rc_file' variables here
+display_current_date_time
+echo "Starting deployment of $tag using $openrcfile for credentials."
+source "$openrcfile"
+
+# Rest of the script ...
+
+# Call the functions
+clean_up_servers
+clean_up_keypairs
+clean_up_floatips
+clean_up_viprt
+clean_up_subnets
+clean_up_routers
+clean_up_networks
+clean_up_securitygrps
+# Remove unnecessary files
+rm -f "$sshconf_file" "$knownhosts" "floatipadd1" "floatipadd2" "$hostsfile" "addr_vip" "vadd"
