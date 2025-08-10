@@ -1,257 +1,129 @@
 ---
-- hosts: all 
-  gather_facts: yes
-  become: yes
-  become_method: sudo
-  tasks:
-    - name: updating all hosts 
-      apt:
-        update_cache: yes
-    - name : sudo wait
-      become: yes
-      shell: while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;
 
-- hosts: webservers 
+- hosts: dev 
   become: true
   become_method: sudo
-  gather_facts: true
+  gather_facts: no
   tasks:
-    - name: update all webservers 
+    - name: Update APT cache
       apt:
-        update_cache: true
-
-    - name: Installing nginx
+        update_cache: yes
+        cache_valid_time: 7200
+        
+    - name: Install all required APT packages
       apt:
-        name: nginx
+        name:
+          - python3-pip
+          - snmpd
+          - prometheus-node-exporter
         state: latest
-        update_cache: true
 
-    - name: pip install
-      apt:
-        name: python3-pip
-        state: latest
-        update_cache: true
-
-    - name: Installing flask app
+    - name: Install all required Python packages via pip
       pip:
         executable: pip3
-        name: flask
+        name:
+          - flask
+          - gunicorn
         state: latest
 
-    - name: apt update
-      apt:
-        update_cache: true
-
-    - name: Installing flask service deployment
-      pip:
-        executable: pip3
-        name: gunicorn
-        state: latest
-
-    - name: apt update
-      apt:
-        update_cache: true
-
-    - name: copy flask app 
+    - name: Copy Flask application
       copy:
-        src: /$PWD/service.py
+        src: python_files/service.py
         dest: /home/ubuntu/app.py
         owner: ubuntu
         mode: '0644'
+        
+    - name: copy snmpd.conf file
+      copy: 
+        src: ./templates/snmpd.conf 
+        dest: /etc/snmp/snmpd.conf
 
-    - name: deploying Flask application 
+    - name: Deploy Flask application with Gunicorn
       shell: gunicorn -w 2 -D -b 0.0.0.0:5000 app:app
+      args:
+        chdir: /home/ubuntu
 
-    - name: install snmpd 
-      apt:
-        name: snmpd
-        state: latest
-        update_cache: true
-
-    - name: configure snmpd
-      template:
-             src: snmpd.conf
-             dest: /etc/snmp/snmpd.conf
-
-    - name: restarting snmpd
+    - name: restart snmpd
       service:
-            name: snmpd
-            state: restarted
-
-    - name: apt update
-      apt:
-        update_cache: true
-  
+        name: snmpd
+        state: restarted
+    
+    
 - hosts: all
   gather_facts: true
     
-- hosts: HAproxy 
+- hosts: HAproxy
   become: true
+  gather_facts: no
   tasks: 
-    - name: update HAproxy
+    - name: Update APT cache
       apt:
         update_cache: yes
+        cache_valid_time: 7200
 
-    - name: Installing HAPROXY
+    - name: Installing requird packages
       apt:
-        name: haproxy
+        name: 
+          - haproxy
+          - nginx
+          - snmp 
+          - snmp-mibs-downloader
+          - keepalived
+          - prometheus-node-exporter
         state: present
-        update_cache: true
    
-    - name: Installing keepalived
-      apt:
-        name: keepalived
-        state: present
-        update_cache: true
-    
-    - name: Configure haproxy
+    - name: Template keepalived config
       template:
-             src: /$PWD/haproxy.cfg.j2
-             dest: /etc/haproxy/haproxy.cfg
+        src: ./templates/keepalived.conf.j2
+        dest: /etc/keepalived/keepalived.conf
+
+    - name: copy template haproxy 
+      template: 
+        src: ./templates/haproxy.conf
+        dest: /etc/haproxy/haproxy.cfg
+
+    - name: copy template nginx 
+      template: 
+        src: ./templates/nginx.conf
+        dest: /etc/nginx/nginx.conf
 
     - name: Restart haproxy
       service:
         name: haproxy
         state: restarted
 
-    - name: apt update
-      apt:
-        update_cache: true
-
-    - name: Installing Nginx
-      apt:
-        name: nginx
-        update_cache: yes
-        state: latest
-
-    - name: Installing snmp, snmp-mibs-downloader
-      apt: 
-        update_cache: yes
-        name: [ 'snmp', 'snmp-mibs-downloader' ] 
-        state: latest
-
-    - name: configure nginx udp port
-      template:
-             src: nginxport.conf
-             dest: /etc/nginx/sites-available/default
-
-    - name: configure udp for loadbalancing
-      template:
-             src: nginxudp.conf
-             dest: /etc/nginx/nginx.conf
-
     - name: Restart Nginx
       service:
-            name: nginx
-            state: restarted
-    - name: apt update
-      apt:
-        update_cache: true
+        name: nginx
+        state: restarted
 
     - name: Restart keepalived
       service:
-            name: keepalived
-            state: restarted
-    - name: apt update
-      apt:
-        update_cache: true
-
-- hosts: primary_proxy
-  become: yes
-  vars:
-    host_name: "{{ inventory_hostname }}"
-    node_state: MASTER
-    node_priority: 101
-    virtual_ip: "{{ lookup('file', './addr_vip') }}"
-  tasks:
-    - name: configure keepalived
-      template:
-        src: keepalived.conf.j2
-        dest: /etc/keepalived/keepalived.conf
-
-
-- hosts: backup_proxy
-  become: yes
-  vars:
-    host_name: "{{ inventory_hostname }}"
-    node_state: BACKUP
-    node_priority: 100
-    virtual_ip: "{{ lookup('file', './addr_vip') }}"
-  tasks:
-    - name: configure keepalived
-      template:
-        src: keepalived.conf.j2
-        dest: /etc/keepalived/keepalived.conf
-    
-- name: Restart Keepalived
-  hosts: HAproxy
-  become: yes
-  tasks:
-    - name: Ensure Keepalived service is running
-      systemd:
-        name: keepalived
-        enabled: yes
-
-    - name: restart keepalived
-      service:
         name: keepalived
         state: restarted
-        
-    - name: start keepalived
+
+
+- hosts: bastion
+  become: true
+  tasks:
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 7200
+
+    - name: Install all required APT packages
+      apt:
+        name:
+          - prometheus
+          - prometheus-node-exporter
+        state: latest
+
+    - name: copy prometheus.yml file
+      template: 
+        src: ./templates/prometheus.yaml
+        dest: /etc/prometheus/prometheus.yml
+
+    - name: Restart Prometheus
       service:
-        name: keepalived
-        state: started
-- name: Installing Prometheus and Grafana on Bastion
-  hosts: bastion
-  gather_facts: yes
-  become: true
-  tasks:
-    - name : sudo wait
-      become: yes
-      shell: while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;
- 
-    - name: gather server ip addresses
-      setup:
-          filter: ansible_default_ipv4.address     
-
-    - name: Configuring Dependencies 
-      copy:
-        src: "prometheus_grafana.sh"
-        dest: "prometheus_grafana.sh"
-        mode: '0755'
-    
-    - name: Executing Dependencies 
-      command: bash prometheus_grafana.sh
-
-    - name: copy prometheus.yml
-      template:
-        src: "prometheus.yml.j2"
-        dest: "/etc/prometheus/prometheus.yml"
-
-    - name: Restart prometheus
-      systemd:
         name: prometheus
-        state: restarted 
-       
-- name: Installing Node exporter on nodes
-  hosts: webservers
-  gather_facts: yes
-  become: true
-  tasks:
-  
-    - name: gather server ip addresses
-      setup:
-            filter: ansible_default_ipv4.address
-
-    - name : sudo wait
-      become: yes
-      shell: while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1; do sleep 5; done;
-
-    - name: Configuring Dependencies 
-      copy:
-        src: "exporter.sh"
-        dest: "exporter.sh"
-        mode: '0755'
-    
-    - name: Executing Dependencies
-      command: bash exporter.sh
+        state: restarted
