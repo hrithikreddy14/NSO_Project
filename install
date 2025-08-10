@@ -1,276 +1,165 @@
-#!/bin/bash
+#!/usr/bin/env python3
 
-display_current_date_time() {
-    echo "$(date)"
-}
+import openstack
+import sys
+import os
+import logging
+import json
 
-openrcfile=$1
-tag=$2
-ssh_key=$3
-no_of_serv=3
+from python_files.create_ssh_config import create_ssh_config_file, write_hosts
+from python_files.create_server import create_instance_if_not_exists
+from python_files.network_files import get_external_network, get_unused_floating_ip, create_network
+from python_files.create_securityGroup import create_security_group
+from python_files.openrc import load_openrc
+from python_files.ansible_playbook import run_playbook, ansible_ping
 
-display_current_date_time
-echo "Starting deployment of $tag using $openrcfile for credentials."
-source "$openrcfile"
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
-def_network="${tag}_network"
-def_subnet="${tag}_subnet"
-def_keypair="${tag}_key"
-def_router="${tag}_router"
-def_security_grp="${tag}_security_group"
-haproxyserv="${tag}_HAproxy"
-haproxyserv2="${tag}_HAproxy2"
-bastionserv="${tag}_bastion"
-devlop_serv="${tag}_dev"
-virtualip="${tag}_vip"
-sshconf_file="config"
-knownhosts="known_hosts"
-hostsfile="hosts"
+def create_keypair(conn, keypair_name, public_key_path):
+    # Get the directory where the script is located
+    keypair_name = str(keypair_name) + "_key"
+    with open(public_key_path) as public_key:
+        public_key = public_key.read()
+    existing_keypair = conn.compute.find_keypair(keypair_name)
+    if not existing_keypair:
+        conn.compute.create_keypair(name=keypair_name, public_key=public_key)
+        logging.info(f"Key pair '{keypair_name}' was successfully created.")
+    else:
+        logging.info(f"Key pair '{keypair_name}' already exists.")
 
-if test -f "$sshconf_file"; then
-    rm "$sshconf_file"
-fi
+def create_port_keepalived(conn, network, subnet, sec_group):
+    # Create a port and attach a floating ip to it 
+    keepalived_port = None
+    try: 
+        keepalived_port = conn.network.find_port('my-keepalived-port')
+    except openstack.exceptions.ResourceNotFound:
+        keepalived_port = None
+        
+    if keepalived_port == None:
+        keepalived_port = conn.network.create_port(
+        name='my-keepalived-port',
+        network_id=network.id,
+        fixed_ips=[{'subnet_id': subnet.id}],
+        security_groups=[sec_group.id],
+        )
+    
+    logging.info("Create a floating ip")
+    # create a floating ip 
+    external_network_id = get_external_network(conn)
+    keepalived_floating_ip = get_unused_floating_ip(conn, external_network_id, fixed_ip=keepalived_port.fixed_ips[0]['ip_address'])
+    
+    logging.info("Attach floating ip to port")
+    # attach a floating ip to the keepalived port
+    try:
+        conn.network.update_ip(
+        keepalived_floating_ip,
+        port_id=keepalived_port.id
+        )
+    except openstack.exceptions.ConflictException: 
+        pass
+    conn.network.update_port(keepalived_port.id, allowed_address_pairs=[{"ip_address": keepalived_floating_ip.floating_ip_address}])
+        
+    return keepalived_port, keepalived_floating_ip
 
-if test -f "$knownhosts"; then
-    rm "$knownhosts"
-fi
+def delete_unused_resources(conn, tag):
+    delete_unused_routers(conn, tag)
+    delete_unused_floating_ips(conn, tag)
 
-if test -f "$hostsfile"; then
-    rm "$hostsfile"
-fi
+def delete_unused_routers(conn, tag):
+    routers = conn.network.routers()
+    for router in routers:
+        router_ports = get_router_ports(conn, router.id)
+        if router.name.startswith(tag + "_") and len(router_ports) == 0:
+            conn.network.delete_router(router.id)
+            logging.info(f"Deleted unused router: {router.name}")
 
-checking_keypair=$(openstack keypair list -f value --column Name)
-if ! grep -qFx "$def_keypair" <<< "$checking_keypair"; then
-    keypair_create=$(openstack keypair create --public-key "$ssh_key" "$def_keypair")
-    echo "$(date) keypair created $def_keypair"
-else
-    echo "$(date) $def_keypair already exists"
-fi
+def delete_unused_floating_ips(conn, tag):
+    floating_ips = conn.network.ips()
+    for ip in floating_ips:
+        if ip.description and ip.description.startswith(tag + "_") and ip.fixed_ip_address is None:
+            conn.network.delete_ip(ip.id)
+            logging.info(f"Deleted unused floating IP: {ip.floating_ip_address}")
 
-checking_networks=$(openstack network list -f value --column Name)
-if ! grep -qFx "$def_network" <<< "$checking_networks"; then
-    network_create=$(openstack network create --tag "$tag" "$def_network" -f json)
-    echo "$(date) network created $def_network"
-else
-    echo "$(date) $def_network already exists"
-fi
+def get_router_ports(conn, router_id):
+    return [port for port in conn.network.ports(device_id=router_id)]
 
-checking_subnets=$(openstack subnet list -f value --column Name)
-if ! grep -qFx "$def_subnet" <<< "$checking_subnets"; then
-    subnet_create=$(openstack subnet create --tag "$tag" --network "$def_network" --subnet-range 10.50.0.0/24 --gateway 10.50.0.1 --allocation-pool start=10.50.0.2,end=10.50.0.100 "$def_subnet" -f json)
-    echo "$(date) subnet created $def_subnet"
-else
-    echo "$(date) $def_subnet already exists"
-fi
+def validate_operation():
+    logging.info("Validation completed.")
 
-checking_routers=$(openstack router list -f value --column Name)
-if ! grep -qFx "$def_router" <<< "$checking_routers"; then
-    router_create=$(openstack router create --tag "$tag" "$def_router")
-    echo "$(date) router created $def_router"
-    # adding subnet and external gateway to the router
-    gatewaysetting=$(openstack router set --external-gateway ext-net "$def_router")
-    subnetadding=$(openstack router add subnet "$def_router" "$def_subnet")
-else
-    echo "$(date) $def_router already exists"
-fi
+def main(openrc, tag, public_key_path):
+    logging.info(f"Starting deployment of {tag} using {openrc} for credentials.")
+    load_openrc(openrc)
+    conn = openstack.connect()
 
-checking_secgrps=$(openstack security group list -f value --column Name)
+    logging.info(f"Checking if we have floating IPs available.")
+    delete_unused_resources(conn, tag)
 
-if echo "$checking_secgrps" | grep -qFx "$def_security_grp"; then
-    echo "$(date) $def_security_grp already exists"
-else
-    secgrp_create=$(openstack security group create --tag "$tag" "$def_security_grp" -f json)
-    sec_rule1=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 22 --protocol tcp --ingress "$def_security_grp")
-    sec_rule2=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 80 --protocol icmp --ingress "$def_security_grp")
-    sec_rule3=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 5000 --protocol tcp --ingress "$def_security_grp")
-    sec_rule4=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 8080 --protocol tcp --ingress "$def_security_grp")
-    sec_rule5=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 6000 --protocol udp --ingress "$def_security_grp")
-    sec_rule6=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 9090 --protocol tcp --ingress "$def_security_grp")
-    sec_rule7=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 9100 --protocol tcp --ingress "$def_security_grp")
-    sec_rule8=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 3000 --protocol tcp --ingress "$def_security_grp")
-    sec_rule9=$(openstack security group rule create --remote-ip 0.0.0.0/0 --dst-port 161 --protocol udp --ingress "$def_security_grp")
-    sec_rule10=$(openstack security group rule create --protocol 112 "$def_security_grp")
+    logging.info("Creating keypair.")
+    create_keypair(conn, tag, public_key_path)
 
-    echo "$(date) security group created $def_security_grp"
-fi
+    logging.info("Creating network.")
+    network, subnet = create_network(conn, tag)
+    
+    logging.info("Creating security group.")
+    sec_group = create_security_group(conn, tag, subnet)
+    
+    logging.info("Create a port for keepalived")
+    keepalived_port, keepalived_floating_ip = create_port_keepalived(conn, network, subnet, sec_group)
+    
+    logging.info(f"Creating instances with tag {tag}.")
+    instances = {
+        f"{tag}_bastion": create_instance_if_not_exists(conn, tag + "_bastion", tag, "Ubuntu 20.04 Focal Fossa x86_64", "1C-4GB-100GB", network.id, sec_group, tag, floating_ip_pool=True),
+        f"{tag}_proxy1": create_instance_if_not_exists(conn, tag + "_proxy1", tag, "Ubuntu 20.04 Focal Fossa x86_64", "1C-4GB-100GB", network.id, sec_group, tag, floating_ip_pool=False, allowed_address=keepalived_port.fixed_ips[0]['ip_address']),
+        f"{tag}_proxy2": create_instance_if_not_exists(conn, tag + "_proxy2", tag, "Ubuntu 20.04 Focal Fossa x86_64", "1C-4GB-100GB", network.id, sec_group, tag, floating_ip_pool=False, allowed_address=keepalived_port.fixed_ips[0]['ip_address'])
+    }
+    # Create the number of backend servers as per server.conf
+    with open("servers.conf", "r") as file:
+        no_servers = file.read()
+    for i in range(1, int(no_servers) + 1):
+        logging.info(f"Creating the {tag}_dev{i} backend server")
+        instances[tag + '_dev' + str(i)] = create_instance_if_not_exists(conn, tag + "_dev" + str(i), tag, "Ubuntu 20.04 Focal Fossa x86_64", "1C-4GB-100GB", network.id, sec_group, tag, floating_ip_pool=False)
+        
+    # Filter out instances that were not created
+    instances = {name: inst for name, inst in instances.items() if inst is not None}
 
-echo "$(date) creating virtual port"
-viripprt=$(openstack port create --network "$def_network" --fixed-ip subnet="$def_subnet" --no-security-group "$virtualip")
+    internal_ips = {name: inst["internal_ip"] for name, inst in instances.items()}
+    floating_ips = {name: inst["floating_ip"] for name, inst in instances.items()}
 
-ipadd_notassign=$(openstack floating ip list --status DOWN -f value -c "Floating IP Address")
+    # Combine internal and floating IPs into a single dictionary
+    instance_details = {
+        name: {
+            "internal_ip": internal_ips.get(name),
+            "floating_ip": floating_ips.get(name)
+        } for name in instances.keys()
+    }
 
-# servers deployment bastion
-serv_contained=$(openstack server list --status ACTIVE --column Name -f value)
+    logging.info(f"Creating the hosts file.")
+    write_hosts(tag, instances)
+    logging.info(f"Creating SSH configuration file.")
 
-if ! echo "$serv_contained" | grep -q "$bastionserv"; then
-    if [[ -n "$ipadd_notassign" ]]; then
-        floating_ip1=$(echo "$ipadd_notassign" | awk '{print $1}')
-        if [[ -n "$floating_ip1" ]]; then
-            echo "$(date) floating IP is given for bastion server"
-        else
-            echo "$(date) Creating floating IP for bastion"
-            floating_ip1create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd1)
-            floating_ip1=$(cat floatipadd1)
-        fi
-    else
-        echo "$(date) Creating floating IP for bastion"
-        floating_ip1create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd1)
-        floating_ip1=$(cat floatipadd1)
-    fi
+    # Write the instances dictionary to a file
+    instances_file_path = os.path.join(os.getcwd(), "instances.json")
+    with open(instances_file_path, 'w') as instances_file:
+        json.dump(instance_details, instances_file, indent=4)
+    logging.info(f"Instances details written to {instances_file_path}")
 
-    create_bastion=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$bastionserv" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
-    fipadd_bastion=$(openstack server add floating ip "$bastionserv" "$floating_ip1")
-    echo "$(date) Created $bastionserv server"
-else
-    echo "$(date) $bastionserv already exists"
-fi
+    # Pass the instances file path to create_ssh_config_file
+    create_ssh_config_file(tag, instances_file_path, str(os.path.abspath(public_key_path))[:-4])
+    
+    logging.info("Ping all hosts")
+    if not ansible_ping(tag):
+        exit()
+    
+    logging.info("Executing Ansible playbook.")
+    run_playbook(tag, virtual_ip=keepalived_port.fixed_ips[0]['ip_address'])
 
-# servers deployment haproxies
-if ! echo "$serv_contained" | grep -q "$haproxyserv"; then
-    if [[ -n "$ipadd_notassign" ]]; then
-        floating_ip2=$(echo "$ipadd_notassign" | awk '{print $2}')
-        if [[ -n "$floating_ip2" ]]; then
-            echo "$(date) floating IP is given for Haproxy server"
-        else
-            echo "$(date) Creating floating IP for Haproxy"
-            floating_ip2create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd2)
-            floating_ip2=$(cat floatipadd2)
-        fi
-    else
-        echo "$(date) Creating floating IP for Haproxy"
-        floating_ip2create=$(openstack floating ip create ext-net -f json | jq -r '.floating_ip_address' >floatipadd2)
-        floating_ip2=$(cat floatipadd2)
-    fi
+    validate_operation()
 
-    create_haproxy=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$haproxyserv" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
-    create_haproxy2=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$haproxyserv2" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
-    echo "$(date) Two haproxy $haproxyserv and $haproxyserv2 servers are created"
-else
-    echo "$(date) Two haproxy $haproxyserv and $haproxyserv2 servers already exist"
-fi
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: install <openrc> <tag> <ssh_key>")
+        sys.exit(1)
 
-vip_fipadding=$(openstack floating ip set --port "$virtualip" "$floating_ip2")
-addrof_virip=$(openstack port show "$virtualip" -f value -c fixed_ips | grep -Po '\d+\.\d+\.\d+\.\d+')
-echo "$addrof_virip" >>addr_vip
-
-prtupdte=$(openstack port set --allowed-address ip-address="$floating_ip2" "$virtualip")
-
-number_devlopserv=$(grep -ocP "${devlop_serv}" <<<"$serv_contained")
-
-if ((no_of_serv < number_devlopserv)); then
-    devlopserv_takeout=$((number_devlopserv - no_of_serv))
-    for ((i = 0; i < devlopserv_takeout; i++)); do
-        devserv_remove=$(openstack server list --status ACTIVE -f value -c Name | grep -m1 -oP "${tag}_dev([1-9]+)")
-        removed_serv=$(openstack server delete "$devserv_remove" --wait)
-        echo "$(date) Deleted $devserv_remove"
-    done
-elif ((no_of_serv > number_devlopserv)); then
-    devlopserv_plus=$((no_of_serv - number_devlopserv))
-    j=$((number_devlopserv + 1))
-
-    for ((i = 0; i < devlopserv_plus; i++)); do
-        namedevlopserver="${devlop_serv}${j}"
-        dser_create=$(openstack server create --image "Ubuntu 20.04 Focal Fossa x86_64" "$namedevlopserver" --key-name "$def_keypair" --flavor "1C-1GB-50GB" --network "$def_network" --security-group "$def_security_grp")
-        echo "$(date) Created $namedevlopserver server"
-
-        active=false
-        until $active; do
-            server_status=$(openstack server show "$namedevlopserver" -f value -c status)
-            if [[ "$server_status" == "ACTIVE" ]]; then
-                active=true
-            fi
-        done
-
-        ((j++))
-    done
-else
-    echo "Required number of dev servers ($no_of_serv) already exists."
-fi
-
-floataddr_bastion=$(openstack server list --name "$bastionserv" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==2')
-floataddr_proxy1=$(openstack server show "$haproxyserv" -c addresses | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
-floataddr_proxy2=$(openstack server list --name "$haproxyserv2" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+' | awk 'NR==1')
-
-# update ports of haproxy servers
-proxy1_prt=$(openstack port list --fixed-ip ip-address="$floataddr_proxy1" -c ID -f value)
-proxy2_prt=$(openstack port list --fixed-ip ip-address="$floataddr_proxy2" -c ID -f value)
-
-prt1_u=$(openstack port set --allowed-address ip-address="$addrof_virip" "$proxy1_prt")
-prt2_u=$(openstack port set --allowed-address ip-address="$addrof_virip" "$proxy2_prt")
-
-# config files and hosts files
-echo "$(date) Generating config file"
-echo "Host $bastionserv" >>"$sshconf_file"
-echo "   User ubuntu" >>"$sshconf_file"
-echo "   HostName $floataddr_bastion" >>"$sshconf_file"
-echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
-echo "   UserKnownHostsFile /dev/null" >>"$sshconf_file"
-echo "   StrictHostKeyChecking no" >>"$sshconf_file"
-echo "   PasswordAuthentication no" >>"$sshconf_file"
-
-echo " " >>"$sshconf_file"
-echo "Host $haproxyserv" >>"$sshconf_file"
-echo "   User ubuntu" >>"$sshconf_file"
-echo "   HostName $floataddr_proxy1" >>"$sshconf_file"
-echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
-echo "   StrictHostKeyChecking no" >>"$sshconf_file"
-echo "   PasswordAuthentication no" >>"$sshconf_file"
-echo "   ProxyJump $bastionserv" >>"$sshconf_file"
-
-echo " " >>"$sshconf_file"
-echo "Host $haproxyserv2" >>"$sshconf_file"
-echo "   User ubuntu" >>"$sshconf_file"
-echo "   HostName $floataddr_proxy2" >>"$sshconf_file"
-echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
-echo "   StrictHostKeyChecking no" >>"$sshconf_file"
-echo "   PasswordAuthentication no" >>"$sshconf_file"
-echo "   ProxyJump $bastionserv" >>"$sshconf_file"
-
-echo "[bastion]" >>"$hostsfile"
-echo "$bastionserv" >>"$hostsfile"
-echo " " >>"$hostsfile"
-echo "[HAproxy]" >>"$hostsfile"
-echo "$haproxyserv" >>"$hostsfile"
-echo "$haproxyserv2" >>"$hostsfile"
-
-echo " " >>"$hostsfile"
-echo "[webservers]" >>"$hostsfile"
-
-awakeserv=$(openstack server list --status ACTIVE -f value -c Name | grep -oP "${tag}_dev([1-9]+)")
-echo "$(date) total number of dev servers existing $awakeserv"
-
-# servers looping
-echo "$awakeserv" | while IFS= read -r serv; do
-    ipadd=$(openstack server list --name "$serv" -c Networks -f value | grep -Po '\d+\.\d+\.\d+\.\d+')
-    echo " " >>"$sshconf_file"
-    echo "Host $serv" >>"$sshconf_file"
-    echo "   User ubuntu" >>"$sshconf_file"
-    echo "   HostName $ipadd" >>"$sshconf_file"
-    echo "   IdentityFile ~/.ssh/id_rsa" >>"$sshconf_file"
-    echo "   UserKnownHostsFile=/dev/null" >>"$sshconf_file"
-    echo "   StrictHostKeyChecking no" >>"$sshconf_file"
-    echo "   PasswordAuthentication no" >>"$sshconf_file"
-    echo "   ProxyJump $bastionserv" >>"$sshconf_file"
-
-    echo "$serv" >>"$hostsfile"
-done
-
-echo " " >>"$hostsfile"
-echo "[primary_proxy]" >>"$hostsfile"
-echo "$haproxyserv" >>"$hostsfile"
-echo " " >>"$hostsfile"
-echo "[backup_proxy]" >>"$hostsfile"
-echo "$haproxyserv2" >>"$hostsfile"
-
-echo " " >>"$hostsfile"
-echo "[all:vars]" >>"$hostsfile"
-echo "ansible_user=ubuntu" >>"$hostsfile"
-echo "ansible_ssh_private_key_file=~/.ssh/id_rsa" >>"$hostsfile"
-echo "ansible_ssh_common_args='-F $sshconf_file'" >>"$hostsfile"
-
-echo "$(date) Running ansible playbook"
-ansible-playbook -i "$hostsfile" site.yaml
-
-echo "Bastion IP address: "$floating_ip1""
-
-echo "HAproxy IP address: "$floating_ip2""
+    main(sys.argv[1], sys.argv[2], sys.argv[3])
+    #worked install <openrc> <tag> <ssh_key>
