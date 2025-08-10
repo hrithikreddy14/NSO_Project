@@ -43,3 +43,4 @@ def create_network(conn, tag):
     else:
         logging.info(f"Network {network.name} already exists")
     return network, subnet
+
